@@ -36,21 +36,30 @@ async function twikoo(event, payload = {}) {
 export async function twikooLogin(password) {
   if (!password) throw new Error('请输入密码');
   if (typeof md5 !== 'function') throw new Error('md5 组件未加载，请刷新页面重试');
-  // 后端 LOGIN 校验 md5(传入密码) === ADMIN_PASS
+  // Twikoo 2.0.13：服务端对传入密码做 md5 后比对 ADMIN_PASS，因此传「密码原文」；
+  // 兼容旧版后端（需要前端先 md5）作为兜底。
   const m = md5(password);
+  let ok = false;
   try {
-    await twikoo('LOGIN', { password: m });
-  } catch (e) {
-    // 未配置管理密码 → 初始化：后端存 md5(传入值)，传原文使 ADMIN_PASS = md5(原文)
-    if ((e.messageRaw || '').includes('未配置管理密码')) {
-      await twikoo('SET_PASSWORD', { password });
+    await twikoo('LOGIN', { password });
+    ok = true;
+  } catch (e1) {
+    try {
       await twikoo('LOGIN', { password: m });
-    } else {
-      throw e;
+      ok = true;
+    } catch (e2) {
+      // 未配置管理密码 → 初始化（传原文，后端存 md5(原文)）
+      if ((e2.messageRaw || '').includes('未配置管理密码')) {
+        await twikoo('SET_PASSWORD', { password });
+        await twikoo('LOGIN', { password });
+        ok = true;
+      } else {
+        throw e2;
+      }
     }
   }
-  // 后端 isAdmin 校验 md5(accessToken) === ADMIN_PASS，因此 accessToken 需要
-  // 传「密码原文」或 md5(密码)（取决于 ADMIN_PASS 当初是怎么写入的）。
+  if (!ok) throw new Error('登录失败');
+  // 后端 isAdmin 校验 md5(accessToken) === ADMIN_PASS → accessToken 需传「密码原文」或 md5
   // 用一次真实的 COMMENT_GET_FOR_ADMIN 探测哪种形式有效，就存哪种。
   for (const cand of [password, m]) {
     try {
@@ -59,8 +68,8 @@ export async function twikooLogin(password) {
       return true;
     } catch (_) { /* 尝试下一种 */ }
   }
-  // 都没通过也先存 md5（与官方前端一致），登录态保留但评论接口可能提示重新登录
-  LS.set('twikoo_token', m);
+  // 都没通过也先存原文（与官方前端一致），登录态保留但评论接口可能提示重新登录
+  LS.set('twikoo_token', password);
   return true;
 }
 
