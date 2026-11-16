@@ -11,8 +11,8 @@ const LS = {
 export function getConfig() {
   return {
     token: LS.get('gh_token') || '',
-    owner: LS.get('gh_owner') || '',
-    repo: LS.get('gh_repo') || '',
+    owner: LS.get('gh_owner') || 'imicq',
+    repo: LS.get('gh_repo') || 'astro-blog',
     branch: LS.get('gh_branch') || 'main',
   };
 }
