@@ -1139,7 +1139,9 @@ routes.tksettings = async () => {
     main.innerHTML = `<div class="panel">读取 Twikoo 配置失败：${esc(e.message)}</div>`;
     return;
   }
-  const keys = Object.keys(config).filter((k) => k !== 'CREDENTIALS' && k !== 'ADMIN_PASS');
+  // 常用配置项预置（新后端数据库为空时不显示空白页），与后端已有配置合并
+  const keys = [...new Set([...Object.keys(TK_CONFIG_LABELS), ...Object.keys(config)])]
+    .filter((k) => k !== 'CREDENTIALS' && k !== 'ADMIN_PASS');
   const rows = keys.map((k) => `
     <tr data-key="${esc(k)}">
       <td style="white-space:nowrap"><b>${esc(k)}</b><br><span style="color:var(--muted);font-size:.78rem">${esc(TK_CONFIG_LABELS[k] || '')}</span></td>
