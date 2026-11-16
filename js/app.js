@@ -785,7 +785,7 @@ function renderTwikooLogin() {
   main.innerHTML = `
     <h1 class="page">评论管理</h1>
     <div class="panel" style="max-width:420px">
-      <p style="color:var(--muted);font-size:.88rem">输入 Twikoo 管理密码（在 Twikoo 部署后首次设置的那个）。</p>
+      <p style="color:var(--muted);font-size:.88rem">输入 Twikoo 管理密码。如果还没设置过密码，这里输入的密码会<b>自动成为管理密码</b>（评论区的管理面板用同一密码）。</p>
       <label class="f">Twikoo 管理密码</label>
       <input type="password" id="tk-pwd">
       <div class="form-actions"><button class="btn primary" id="tk-login">登录</button></div>

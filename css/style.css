@@ -44,8 +44,15 @@ body {
 }
 #side-nav a:hover { background: rgba(255,255,255,.06); }
 #side-nav a.active { background: rgba(255,255,255,.1); border-left-color: var(--primary); color: #fff; }
-.sidebar-footer { padding: 14px 18px; font-size: .8rem; color: #8595a6; border-top: 1px solid rgba(255,255,255,.08); }
+.sidebar-footer { padding: 14px 18px; font-size: .8rem; color: #a8b4c2; border-top: 1px solid rgba(255,255,255,.08); }
 .sidebar-footer div { margin-bottom: 8px; word-break: break-all; }
+/* 深色侧栏上的按钮：浅色描边 + 浅色文字，避免看不清 */
+.sidebar-footer .btn.ghost {
+  color: #cfd6e0;
+  border-color: rgba(255,255,255,.35);
+  background: rgba(255,255,255,.06);
+}
+.sidebar-footer .btn.ghost:hover { color: #fff; border-color: rgba(255,255,255,.7); background: rgba(255,255,255,.14); }
 
 /* 主区域 */
 #main { flex: 1; padding: 26px 32px 90px; max-width: 1100px; }
