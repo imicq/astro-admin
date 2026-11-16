@@ -218,3 +218,39 @@ textarea.code { font-family: Consolas, Monaco, monospace; font-size: .88rem; min
   #side-nav a { font-size: 1.2rem; padding: 12px 0; text-align: center; border-left: none; }
   #main { padding: 18px 14px 90px; }
 }
+
+/* ---------- 文章编辑器 ---------- */
+.editor-tabs { display: flex; gap: 8px; margin: 4px 0 8px; }
+.editor-toolbar {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 8px; background: var(--panel, #fff);
+  border: 1px solid var(--border, #e5e7eb); border-bottom: none;
+  border-radius: 8px 8px 0 0;
+}
+.editor-toolbar button {
+  padding: 4px 10px; font-size: .82rem; cursor: pointer;
+  background: transparent; border: 1px solid var(--border, #e5e7eb);
+  border-radius: 6px; color: inherit;
+}
+.editor-toolbar button:hover { background: rgba(0,0,0,.06); }
+.vis-editor {
+  min-height: 420px; padding: 14px 16px; overflow-y: auto;
+  background: var(--panel, #fff);
+  border: 1px solid var(--border, #e5e7eb); border-radius: 0 0 8px 8px;
+  line-height: 1.75; outline: none; font-size: .95rem;
+}
+.vis-editor h2 { font-size: 1.35rem; margin: 1.1em 0 .5em; }
+.vis-editor h3 { font-size: 1.15rem; margin: 1em 0 .5em; }
+.vis-editor blockquote {
+  margin: .8em 0; padding: 8px 14px; border-left: 4px solid var(--accent, #e87d5a);
+  background: rgba(0,0,0,.03); border-radius: 0 6px 6px 0; color: var(--muted, #666);
+}
+.vis-editor pre {
+  background: #1e1e2e; color: #e8e8f0; padding: 12px 14px;
+  border-radius: 8px; overflow-x: auto; font-size: .85rem;
+}
+.vis-editor code { background: rgba(0,0,0,.07); padding: 2px 6px; border-radius: 4px; font-size: .88em; }
+.vis-editor pre code { background: none; padding: 0; }
+.vis-editor img { max-width: 100%; border-radius: 8px; }
+.vis-editor hr { border: none; border-top: 1px solid var(--border, #e5e7eb); margin: 1.4em 0; }
+.vis-editor:focus { border-color: var(--accent, #e87d5a); }

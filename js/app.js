@@ -10,7 +10,8 @@ import {
 } from './github.js';
 import {
   twikooLogin, twikooLogged, twikooLogout,
-  getAdminComments, commentDelete, commentShow, commentSticky,
+  getAdminComments, getRecentComments, commentDelete, commentShow, commentSticky,
+  getTwikooConfigAdmin, setTwikooConfigAdmin,
 } from './twikoo.js';
 
 const main = document.getElementById('main');
@@ -245,38 +246,117 @@ routes.dashboard = async () => {
   setNav('dashboard');
   main.innerHTML = '<h1 class="page">概览</h1><div class="panel">加载中…</div>';
   try {
-    const [posts, moments, pages] = await Promise.all([
+    const [postsItems, moments, pages] = await Promise.all([
       listDir('src/content/posts'),
       listDir('src/content/moments'),
       listDir('src/content/pages'),
     ]);
-    const queue = getQueue();
     const site = await ensureSiteCache().catch(() => null);
+    const queue = getQueue();
+
+    // 文章元信息（标题/日期/分类）
+    const files = postsItems.filter((f) => f.name.endsWith('.md'));
+    const postsMeta = await Promise.all(files.map(async (f) => {
+      const { content } = await readFile(`src/content/posts/${f.name}`);
+      const { fm } = parseFrontMatter(content);
+      const slug = f.name.replace(/\.md$/, '');
+      return { slug, title: fm.title || slug, date: fm.date || '', draft: fm.draft === 'true', category: (fm.category || '').replace(/"/g, '') };
+    }));
+    postsMeta.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    const published = postsMeta.filter((p) => !p.draft);
+    const categories = new Set(published.map((p) => p.category).filter(Boolean));
+
+    // 评论统计与最近回复
+    let commentCount = '—';
+    let recent = [];
+    let recentNote = '';
+    if (twikooLogged()) {
+      try {
+        const d = await getAdminComments(1, 1);
+        commentCount = d.data?.count ?? '—';
+        recent = (d.data?.comments || []).slice(0, 8).map((c) => ({
+          nick: c.nick, text: stripHtml(c.comment || ''), time: fmtTime(c.created), date: fmtTime(c.created, true),
+        }));
+      } catch (e) { recentNote = '评论统计加载失败：' + e.message; }
+    }
+    if (!recent.length) {
+      try {
+        const list = await getRecentComments(8);
+        recent = list.map((c) => ({ nick: c.nick, text: c.commentText || stripHtml(c.comment || ''), time: fmtTime(c.created), date: fmtTime(c.created, true) }));
+      } catch (e) { recentNote = recentNote || '评论接口未连接（可在「评论管理」登录后查看完整统计）'; }
+    }
+
+    const md = (d) => (d || '').replace(/T.*$/, '').slice(5).replace('-', '.');
     main.innerHTML = `
       <h1 class="page">概览</h1>
-      <div class="panel" style="display:flex;gap:14px;flex-wrap:wrap">
-        <div style="flex:1;min-width:150px"><div style="font-size:2rem;font-weight:700">${posts.length}</div><div style="color:var(--muted)">文章</div></div>
-        <div style="flex:1;min-width:150px"><div style="font-size:2rem;font-weight:700">${moments.length}</div><div style="color:var(--muted)">碎碎念</div></div>
-        <div style="flex:1;min-width:150px"><div style="font-size:2rem;font-weight:700">${pages.length}</div><div style="color:var(--muted)">独立页面</div></div>
-        <div style="flex:1;min-width:150px"><div style="font-size:2rem;font-weight:700">${queue.length}</div><div style="color:var(--muted)">待发布改动</div></div>
-      </div>
       <div class="panel">
-        <h2 class="sec" style="margin-top:0">快捷操作</h2>
+        <h2 class="sec" style="margin-top:0">网站概要</h2>
+        <p style="font-size:1.05rem;margin:6px 0 14px">
+          目前有 <b style="font-size:1.5rem">${published.length}</b> 篇文章，并有
+          <b style="font-size:1.5rem">${commentCount}</b> 条关于你的评论在
+          <b style="font-size:1.5rem">${categories.size}</b> 个分类中。
+          ${postsMeta.length - published.length ? `另有 ${postsMeta.length - published.length} 篇草稿。` : ''}
+        </p>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px">
+          <div style="flex:1;min-width:130px"><div style="font-size:1.9rem;font-weight:700">${moments.length}</div><div style="color:var(--muted)">碎碎念</div></div>
+          <div style="flex:1;min-width:130px"><div style="font-size:1.9rem;font-weight:700">${pages.length}</div><div style="color:var(--muted)">独立页面</div></div>
+          <div style="flex:1;min-width:130px"><div style="font-size:1.9rem;font-weight:700">${queue.length}</div><div style="color:var(--muted)">待发布改动</div></div>
+        </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
-          <button class="btn primary" onclick="location.hash='#/posts/new'">✍️ 写文章</button>
+          <button class="btn primary" onclick="location.hash='#/posts/new'">✍️ 撰写新文章</button>
           <button class="btn" onclick="location.hash='#/moments/new'">💭 发碎碎念</button>
           <button class="btn" onclick="location.hash='#/comments'">💬 管理评论</button>
+          <button class="btn" onclick="location.hash='#/settings'">⚙️ 系统设置</button>
           <button class="btn ok" id="qk-rebuild">🔄 重新构建前台</button>
         </div>
         <p style="color:var(--muted);font-size:.85rem;margin-bottom:0">
           当前仓库：${getConfig().owner}/${getConfig().repo}（分支 ${getConfig().branch}）${site ? ` · 站点：${esc(site.siteUrl)}` : ''}
         </p>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:stretch">
+        <div class="panel" style="flex:1;min-width:300px">
+          <h2 class="sec" style="margin-top:0">最近发布的文章</h2>
+          ${postsMeta.length ? `<table class="list">
+            ${postsMeta.slice(0, 8).map((p) => `
+              <tr>
+                <td style="white-space:nowrap;color:var(--muted)">${md(p.date)}</td>
+                <td><a href="${esc(site?.siteUrl || '')}/${encodeURIComponent(p.slug)}.html" target="_blank">${esc(p.title)}</a>
+                  ${p.draft ? '<span class="badge orange">草稿</span>' : ''}</td>
+              </tr>`).join('')}
+          </table>` : '<div class="empty-tip">还没有文章</div>'}
+        </div>
+        <div class="panel" style="flex:1;min-width:300px">
+          <h2 class="sec" style="margin-top:0">最近得到的回复</h2>
+          ${recentNote ? `<p style="color:var(--muted);font-size:.85rem">${esc(recentNote)}</p>` : ''}
+          ${recent.length ? `<table class="list">
+            ${recent.map((c) => `
+              <tr>
+                <td style="white-space:nowrap;color:var(--muted)">${esc(c.date)}</td>
+                <td><b>${esc(c.nick)}</b>：<span style="color:var(--muted)">${esc((c.text || '').slice(0, 40))}</span></td>
+              </tr>`).join('')}
+          </table>` : (recentNote ? '' : '<div class="empty-tip">还没有评论</div>')}
+        </div>
       </div>`;
     $('#qk-rebuild').onclick = quickRebuild;
   } catch (e) {
     main.innerHTML = `<div class="panel">加载失败：${esc(e.message)}</div>`;
   }
 };
+
+function stripHtml(s) {
+  const d = document.createElement('div');
+  d.innerHTML = String(s);
+  return d.textContent || '';
+}
+
+function fmtTime(created, short) {
+  if (!created) return '';
+  const n = Number(created) || new Date(created).getTime();
+  if (!n) return '';
+  const d = new Date(n);
+  const two = (x) => String(x).padStart(2, '0');
+  return short ? `${two(d.getMonth() + 1)}.${two(d.getDate())}` : `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
 
 async function quickRebuild() {
   if (!(await confirmBox('触发一次前台重新构建（提交一次变更，消耗一次 Makers 构建额度）？'))) return;
@@ -312,10 +392,11 @@ routes.posts = async (param) => {
       </h1>
       <div class="panel">
         ${rows.length ? `<table class="list">
-          <tr><th>标题</th><th>分类</th><th>日期</th><th>状态</th><th>操作</th></tr>
+          <tr><th>标题</th><th>地址</th><th>分类</th><th>日期</th><th>状态</th><th>操作</th></tr>
           ${rows.map((r) => `
             <tr>
               <td>${esc(r.title)}</td>
+              <td><a href="${esc(site?.siteUrl || '')}/${encodeURIComponent(r.slug)}.html" target="_blank" style="color:var(--muted);font-size:.82rem">/${esc(r.slug)}.html</a></td>
               <td>${esc(r.category)}</td>
               <td>${esc((r.date || '').replace('T', ' ').slice(0, 16))}</td>
               <td>${r.draft ? '<span class="badge orange">草稿</span>' : '<span class="badge green">已发布</span>'}</td>
@@ -354,19 +435,46 @@ function fillPostEditor(slug, content) {
         <div style="flex:0 0 200px"><label class="f">分类</label><input type="text" id="pe-category" value="${esc((fm.category || '').replace(/"/g, '') || '未分类')}"></div>
       </div>
       <div class="form-row">
-        <div><label class="f">日期</label><input type="text" id="pe-date" value="${esc(fm.date || fmDate())}"></div>
+        <div><label class="f">自定义链接（发布后地址 https://astro.hxy.cc/链接.html）</label>
+          <input type="text" id="pe-slug" value="${esc(slug || '')}" placeholder="如 blgnb" ${slug ? 'disabled' : ''}></div>
+        <div style="flex:0 0 200px"><label class="f">日期</label><input type="text" id="pe-date" value="${esc(fm.date || fmDate())}"></div>
         <div style="flex:0 0 140px;display:flex;align-items:flex-end;padding-bottom:8px">
           <label style="cursor:pointer"><input type="checkbox" id="pe-draft" ${fm.draft === 'true' ? 'checked' : ''}> 草稿（不发布）</label>
         </div>
       </div>
-      <label class="f">标签（逗号分隔）</label>
-      <input type="text" id="pe-tags" value="${esc(tags)}">
+      <div class="form-row">
+        <div><label class="f">标签（逗号分隔）</label><input type="text" id="pe-tags" value="${esc(tags)}"></div>
+      </div>
       <label class="f">摘要（显示在文章卡片上）</label>
       <textarea id="pe-summary" rows="2">${esc((fm.summary || '').replace(/"/g, ''))}</textarea>
-      <label class="f">正文（Markdown）</label>
-      <div class="editor-grid">
-        <textarea class="code" id="pe-body">${esc(body)}</textarea>
+      <label class="f">正文</label>
+      <div class="editor-tabs">
+        <button type="button" class="btn small" id="pe-mode-vis">📝 可视化编辑</button>
+        <button type="button" class="btn small ghost" id="pe-mode-src">&lt;/&gt; 源码（Markdown/HTML）</button>
+      </div>
+      <div id="pe-toolbar" class="editor-toolbar">
+        <button type="button" data-cmd="h2">H2</button>
+        <button type="button" data-cmd="h3">H3</button>
+        <button type="button" data-cmd="bold"><b>B</b></button>
+        <button type="button" data-cmd="italic"><i>I</i></button>
+        <button type="button" data-cmd="underline"><u>U</u></button>
+        <button type="button" data-cmd="strikeThrough"><s>S</s></button>
+        <button type="button" data-cmd="quote">❝ 引用</button>
+        <button type="button" data-cmd="ul">• 列表</button>
+        <button type="button" data-cmd="ol">1. 列表</button>
+        <button type="button" data-cmd="codeblock">{ } 代码块</button>
+        <button type="button" data-cmd="inlinecode">&lt;code&gt;</button>
+        <button type="button" data-cmd="link">🔗 链接</button>
+        <button type="button" data-cmd="image">🖼 图片</button>
+        <button type="button" data-cmd="hr">— 分割线</button>
+        <button type="button" data-cmd="removeFormat">✕ 清除格式</button>
+      </div>
+      <div class="editor-grid" id="pe-src-grid" hidden>
+        <textarea class="code" id="pe-body"></textarea>
         <div class="preview-pane" id="pe-preview"></div>
+      </div>
+      <div id="pe-vis-grid">
+        <div class="vis-editor" id="pe-vis" contenteditable="true"></div>
       </div>
       <div class="form-actions">
         <button class="btn primary" id="pe-save">${slug ? '保存改动（加入发布队列）' : '保存新文章（加入发布队列）'}</button>
@@ -375,14 +483,108 @@ function fillPostEditor(slug, content) {
       </div>
     </div>`;
 
-  const bodyEl = $('#pe-body');
-  const updatePreview = () => { $('#pe-preview').innerHTML = marked.parse(bodyEl.value || ''); };
-  bodyEl.addEventListener('input', updatePreview);
-  updatePreview();
+  const srcEl = $('#pe-body');
+  const visEl = $('#pe-vis');
+  srcEl.value = body;
+  visEl.innerHTML = marked.parse(body || '');
+  let mode = 'vis';
+
+  const setMode = (m) => {
+    mode = m;
+    $('#pe-src-grid').hidden = m !== 'src';
+    $('#pe-vis-grid').hidden = m !== 'vis';
+    $('#pe-toolbar').style.display = m === 'vis' ? 'flex' : 'none';
+    $('#pe-mode-vis').className = 'btn small' + (m === 'vis' ? '' : ' ghost');
+    $('#pe-mode-src').className = 'btn small' + (m === 'src' ? '' : ' ghost');
+    if (m === 'src') srcEl.value = visEl.innerHTML.replace(/<div><br><\/div>/g, '');
+    if (m === 'vis') visEl.innerHTML = marked.parse(srcEl.value || '');
+  };
+  $('#pe-mode-vis').onclick = () => setMode('vis');
+  $('#pe-mode-src').onclick = () => setMode('src');
+
+  const updatePreview = () => { $('#pe-preview').innerHTML = marked.parse(srcEl.value || ''); };
+  srcEl.addEventListener('input', updatePreview);
+
+  visEl.addEventListener('keydown', (e) => {
+    // 可视化编辑器里 Tab 缩进、粘贴纯文本
+    if (e.key === 'Tab') { e.preventDefault(); document.execCommand('insertHTML', false, '&emsp;'); }
+  });
+  visEl.addEventListener('paste', (e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, text);
+  });
+
+  // 工具栏
+  const insertHTML = (html) => { document.execCommand('insertHTML', false, html); visEl.focus(); };
+  $('#pe-toolbar').querySelectorAll('button').forEach((btn) => {
+    btn.onclick = () => {
+      const cmd = btn.dataset.cmd;
+      visEl.focus();
+      if (mode !== 'vis') { // 源码模式插入 Markdown 语法
+        const mdMap = {
+          h2: '\n## 标题\n', h3: '\n### 标题\n', bold: '**加粗**', italic: '*斜体*',
+          underline: '', strikeThrough: '~~删除线~~', quote: '\n> 引用内容\n',
+          ul: '\n- 列表项\n', ol: '\n1. 列表项\n',
+          codeblock: '\n```\n代码内容\n```\n', inlinecode: '`代码`',
+          link: '[链接文字](https://example.com)', image: '![图片描述](https://example.com/xx.png)', hr: '\n---\n',
+        };
+        if (mdMap[cmd]) insertAtCursor(srcEl, mdMap[cmd]);
+        updatePreview();
+        return;
+      }
+      switch (cmd) {
+        case 'h2': document.execCommand('formatBlock', false, 'h2'); break;
+        case 'h3': document.execCommand('formatBlock', false, 'h3'); break;
+        case 'bold': document.execCommand('bold'); break;
+        case 'italic': document.execCommand('italic'); break;
+        case 'underline': document.execCommand('underline'); break;
+        case 'strikeThrough': document.execCommand('strikeThrough'); break;
+        case 'quote': document.execCommand('formatBlock', false, 'blockquote'); break;
+        case 'ul': document.execCommand('insertUnorderedList'); break;
+        case 'ol': document.execCommand('insertOrderedList'); break;
+        case 'codeblock': {
+          const sel = document.getSelection().toString() || '代码内容';
+          insertHTML(`<pre><code>${esc(sel)}</code></pre><p><br></p>`);
+          break;
+        }
+        case 'inlinecode': {
+          const sel = document.getSelection().toString() || '代码';
+          insertHTML(`<code>${esc(sel)}</code>`);
+          break;
+        }
+        case 'link': {
+          const url = prompt('链接地址：', 'https://');
+          if (url) { const sel = document.getSelection().toString() || url; insertHTML(`<a href="${esc(url)}">${esc(sel)}</a>`); }
+          break;
+        }
+        case 'image': {
+          const url = prompt('图片地址：', 'https://');
+          if (url) insertHTML(`<img src="${esc(url)}" alt="图片" />`);
+          break;
+        }
+        case 'hr': insertHTML('<hr>'); break;
+        case 'removeFormat': document.execCommand('removeFormat'); document.execCommand('formatBlock', false, 'p'); break;
+      }
+    };
+  });
+
+  // 新文章：标题输入后自动预填链接（可改）
+  if (!slug) {
+    $('#pe-title').addEventListener('blur', () => {
+      const el = $('#pe-slug');
+      if (!el.value.trim()) {
+        el.value = $('#pe-title').value.trim().replace(/[\\/:*?"<>|.]/g, '-').replace(/\s+/g, '-') || `post-${Date.now() % 10000}`;
+      }
+    });
+  }
 
   $('#pe-save').onclick = () => {
     const title = $('#pe-title').value.trim();
     if (!title) return toast('标题不能为空', 'err');
+    let slugText = slug || $('#pe-slug').value.trim().replace(/[\\/:*?"<>|.]/g, '-').replace(/\s+/g, '-');
+    if (!slugText) slugText = `post-${Date.now() % 10000}`;
+    const bodyOut = mode === 'vis' ? visEl.innerHTML : srcEl.value;
     const tagList = $('#pe-tags').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
     const fmText = [
       '---',
@@ -395,21 +597,25 @@ function fillPostEditor(slug, content) {
       '---',
       '',
     ].join('\n');
-    const finalSlug = slug || $('#pe-title').value.trim()
-      .replace(/[\\/:*?"<>|]/g, '-')
-      .replace(/\s+/g, '-') || `post-${Date.now()}`;
-    const key = `${POSTS_DIR}/${finalSlug}.md`;
+    const key = `${POSTS_DIR}/${slugText}.md`;
     enqueue({
       key,
       path: key,
       action: 'write',
-      content: fmText + bodyEl.value,
+      content: fmText + bodyOut,
       title: (slug ? '更新文章 ' : '新建文章 ') + title,
       time: Date.now(),
     });
-    toast('已加入发布队列，记得去「发布与构建」一键发布', 'ok');
+    toast('已加入发布队列，发布后地址：/' + slugText + '.html', 'ok');
     setTimeout(() => (location.hash = '#/posts'), 800);
   };
+}
+
+function insertAtCursor(el, text) {
+  const start = el.selectionStart, end = el.selectionEnd;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  el.selectionStart = el.selectionEnd = start + text.length;
+  el.focus();
 }
 
 // ---------- 碎碎念 ----------
@@ -507,7 +713,7 @@ routes.pages = async (param) => {
       </h1>
       <div class="panel">
         <p style="color:var(--muted);font-size:.85rem;margin-top:0">
-          页面文件对应前台 <code>/页面名/</code> 地址（如 about.md → /about/）。
+          页面文件对应前台 <code>/页面名.html</code> 地址（如 about.md → /about.html）。
           需要加入导航栏时，在「站点设置」的 nav 里添加对应链接。
         </p>
         ${items.length ? `<table class="list">
@@ -515,7 +721,7 @@ routes.pages = async (param) => {
           ${items.map((f) => `
             <tr>
               <td>${esc(f.name)}</td>
-              <td>/${f.name.replace(/\.md$/, '')}/</td>
+              <td>/${f.name.replace(/\.md$/, '')}.html</td>
               <td>
                 <a class="btn link-like" href="#/pages/${encodeURIComponent(f.name.replace(/\.md$/, ''))}">编辑</a>
                 <a class="btn link-like danger-text" data-del="${esc(f.name)}">删除</a>
@@ -691,12 +897,25 @@ routes.settings = async () => {
       </div>
       <div class="form-row">
         <div><label class="f">主题色</label><input type="text" id="st-accent" value="${esc(site.accentColor)}"></div>
+        <div><label class="f">站点图标地址（favicon）</label><input type="text" id="st-favicon" value="${esc(site.favicon || '/favicon.svg')}"></div>
+      </div>
+      <div class="form-row">
+        <div><label class="f">浏览器标签页后缀（titleSuffix）</label><input type="text" id="st-suffix" value="${esc(site.titleSuffix || site.subtitle)}"></div>
+        <div style="flex:0 0 160px"><label class="f">每页文章数</label><input type="number" id="st-perpage" min="1" max="50" value="${esc(String(site.perPage || 8))}"></div>
+      </div>
+      <div class="form-row">
         <div><label class="f">Twikoo 评论环境地址</label><input type="text" id="st-twikoo" value="${esc(site.twikooEnvId)}"></div>
+        <div style="flex:0 0 200px;display:flex;gap:16px;align-items:flex-end;padding-bottom:6px">
+          <label style="cursor:pointer"><input type="checkbox" id="st-comments" ${site.commentsEnabled === false ? '' : 'checked'}> 全站评论</label>
+          <label style="cursor:pointer"><input type="checkbox" id="st-toc" ${site.tocEnabled === false ? '' : 'checked'}> 文章目录</label>
+        </div>
       </div>
       <label class="f">公告栏（留空则不显示）</label>
       <textarea id="st-ann" rows="2">${esc(site.announcement || '')}</textarea>
       <label class="f">页脚文字（支持 {year} {author} 变量）</label>
       <input type="text" id="st-footer" value="${esc(site.footerText)}">
+      <label class="f">页脚附加行（备案号等，留空不显示）</label>
+      <input type="text" id="st-beian" value="${esc(site.beian || '')}">
 
       <h2 class="sec">导航栏</h2>
       <table class="list" id="nav-table">
@@ -748,11 +967,16 @@ routes.settings = async () => {
       siteUrl: $('#st-url').value.trim(),
       title: $('#st-title').value.trim(),
       subtitle: $('#st-subtitle').value.trim(),
-      titleSuffix: site.titleSuffix,
+      titleSuffix: $('#st-suffix').value.trim(),
       author: $('#st-author').value.trim(),
       avatar: $('#st-avatar').value.trim(),
+      favicon: $('#st-favicon').value.trim() || '/favicon.svg',
+      perPage: Math.max(1, parseInt($('#st-perpage').value, 10) || 8),
+      commentsEnabled: $('#st-comments').checked,
+      tocEnabled: $('#st-toc').checked,
       announcement: $('#st-ann').value,
       footerText: $('#st-footer').value,
+      beian: $('#st-beian').value.trim(),
       accentColor: $('#st-accent').value.trim(),
       colorMode: $('#st-color').value,
       nav: collect('nav-table', 'nv-text', 'nv-url'),
@@ -781,7 +1005,7 @@ routes.comments = async () => {
   renderCommentList(1);
 };
 
-function renderTwikooLogin() {
+function renderTwikooLogin(redirect) {
   main.innerHTML = `
     <h1 class="page">评论管理</h1>
     <div class="panel" style="max-width:420px">
@@ -794,6 +1018,7 @@ function renderTwikooLogin() {
     try {
       await twikooLogin($('#tk-pwd').value);
       toast('登录成功', 'ok');
+      if (redirect) location.hash = redirect;
       route();
     } catch (e) {
       toast('登录失败：' + e.message, 'err');
@@ -872,6 +1097,89 @@ async function renderCommentList(page) {
       <button class="btn" onclick="location.hash='#/comments';location.reload()">重试</button></div>`;
   }
 }
+
+// ---------- 评论设置（Twikoo 配置继承到后台） ----------
+const TK_CONFIG_LABELS = {
+  SITE_NAME: '站点名称（邮件通知等场景展示）',
+  SITE_URL: '站点地址（用于评论来源判断）',
+  AUTHOR: '博主昵称',
+  AVATAR: '博主头像图片地址',
+  GITHUB: '博主 GitHub 主页',
+  BLOG_ROUTE: '博客路由',
+  NOTIFY: '评论回复邮件通知（true/false）',
+  NOTIFY_SPAM: '垃圾评论也发通知（true/false）',
+  SMTP_SERVICE: '邮件服务商（如 QQ、163）',
+  SMTP_USER: '邮箱用户名',
+  SMTP_PASS: '邮箱密码/授权码',
+  SENDER_EMAIL: '发件邮箱',
+  SENDER_NAME: '发件人名称',
+  AKISMET_KEY: 'Akismet 反垃圾 Key（留空关闭）',
+  TURNSTILE_SITE_KEY: 'Turnstile 人机验证 Site Key（留空关闭）',
+  TURNSTILE_SECRET_KEY: 'Turnstile Secret Key',
+  HIDE_SPAM: '前台隐藏待审核评论（true/false）',
+  LIMIT_LENGTH: '评论字数上限',
+  LIMIT_PER_MIN: '每分钟每 IP 评论上限',
+  CENSORLLM_API_KEY: 'LLM 审核 API Key（可选）',
+  CORS_ALLOW_ORIGIN: '跨域白名单（逗号分隔，如 https://astro.hxy.cc）',
+};
+
+routes.tksettings = async () => {
+  setNav('tksettings');
+  if (!twikooLogged()) return renderTwikooLogin('#/tksettings');
+  main.innerHTML = '<h1 class="page">评论设置</h1><div class="panel">加载中…</div>';
+  let config;
+  try {
+    config = await getTwikooConfigAdmin();
+  } catch (e) {
+    if (e.code === 1024 || (e.messageRaw || '').includes('请先登录')) {
+      twikooLogout();
+      renderTwikooLogin('#/tksettings');
+      return;
+    }
+    main.innerHTML = `<div class="panel">读取 Twikoo 配置失败：${esc(e.message)}</div>`;
+    return;
+  }
+  const keys = Object.keys(config).filter((k) => k !== 'CREDENTIALS' && k !== 'ADMIN_PASS');
+  const rows = keys.map((k) => `
+    <tr data-key="${esc(k)}">
+      <td style="white-space:nowrap"><b>${esc(k)}</b><br><span style="color:var(--muted);font-size:.78rem">${esc(TK_CONFIG_LABELS[k] || '')}</span></td>
+      <td><input type="text" class="tkv" data-key="${esc(k)}" value="${esc(String(config[k] ?? ''))}"></td>
+    </tr>`).join('');
+  main.innerHTML = `
+    <h1 class="page">评论设置</h1>
+    <div class="panel">
+      <p style="color:var(--muted);font-size:.85rem;margin-top:0">
+        这里直接管理评论系统（Twikoo）的全部配置，改动<b>即时生效</b>（写入评论云数据库，无需重新构建前台）。
+        常用项：站点信息、邮件通知（SMTP）、反垃圾（Akismet / Turnstile）、评论频率限制、跨域白名单。
+      </p>
+      <table class="list" id="tk-cfg-table">
+        <tr><th style="width:280px">配置项</th><th>值</th></tr>
+        ${rows}
+      </table>
+      <div class="form-actions">
+        <button class="btn primary" id="tks-save">保存评论设置</button>
+        <a class="btn ghost" href="#/comments">去评论管理</a>
+      </div>
+    </div>`;
+  $('#tks-save').onclick = async () => {
+    const out = { ...config };
+    document.querySelectorAll('#tk-cfg-table tr[data-key]').forEach((tr) => {
+      const k = tr.dataset.key;
+      const v = tr.querySelector('.tkv').value.trim();
+      // 保持布尔与数字类型
+      if (v === 'true') out[k] = true;
+      else if (v === 'false') out[k] = false;
+      else if (/^\d+$/.test(v) && /^(LIMIT|NOTIFY|CENSOR|SMTP_PORT|TURNSTILE|MAX)/.test(k)) out[k] = Number(v);
+      else out[k] = v;
+    });
+    try {
+      await setTwikooConfigAdmin(out);
+      toast('评论设置已保存，即时生效', 'ok');
+    } catch (e) {
+      toast('保存失败：' + e.message, 'err');
+    }
+  };
+};
 
 // ---------- 发布与构建 ----------
 routes.publish = async () => {

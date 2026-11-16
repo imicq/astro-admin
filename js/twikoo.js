@@ -103,10 +103,19 @@ export async function commentSticky(id, sticky) {
   return twikoo('COMMENT_SET_FOR_ADMIN', { accessToken: token(), id, set: { sticky: !!sticky } });
 }
 
-export async function getTwikooConfigAdmin() {
-  return twikoo('GET_CONFIG_FOR_ADMIN', { accessToken: token() });
+// 公开接口：最新评论（不需要管理员登录）
+export async function getRecentComments(pageSize = 8) {
+  const d = await twikoo('GET_RECENT_COMMENTS', { pageSize, includeReply: true });
+  return Array.isArray(d.data) ? d.data : [];
 }
 
-export async function setTwikooConfigAdmin(data) {
-  return twikoo('SET_CONFIG', { accessToken: token(), ...data });
+// 管理员读取 Twikoo 全量配置（返回 config 对象）
+export async function getTwikooConfigAdmin() {
+  const d = await twikoo('GET_CONFIG_FOR_ADMIN', { accessToken: token() });
+  return d.config || d.data || {};
+}
+
+// 管理员保存 Twikoo 配置（body.config，后端合并语义）
+export async function setTwikooConfigAdmin(config) {
+  return twikoo('SET_CONFIG', { accessToken: token(), config });
 }
