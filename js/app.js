@@ -81,11 +81,10 @@ function parseFrontMatter(text) {
 
 // ---------- 路由 ----------
 const routes = {};
+// 高级设置（Token/仓库）也需要先登录才能访问
 function route() {
   const hash = location.hash.replace(/^#\//, '') || 'dashboard';
   const [view, ...rest] = hash.split('/');
-  // 高级设置始终可进入；其余页面需要先输入密码解锁
-  if (view === 'setup') return renderAt('setup');
   if (!isConfigured()) return renderAt('setup');
   if (!isUnlocked()) return renderAt('login');
   const fn = routes[view] || routes.dashboard;
@@ -138,34 +137,36 @@ function isUnlocked() { return sessionStorage.getItem('admin_unlocked') === '1';
   if (localStorage.getItem('admin_unlocked')) { sessionStorage.setItem('admin_unlocked', '1'); localStorage.removeItem('admin_unlocked'); }
 })();
 
-// 修改管理密码
-async function changePwd() {
-  const old1 = prompt('请输入当前管理密码：');
+function getAdminUser() { return localStorage.getItem('admin_user') || 'admin'; }
+
+// 账号设置：修改账号名和密码（均需先验证当前密码）
+async function changeAccount() {
+  const old1 = prompt('请输入当前密码以验证身份：');
   if (old1 === null) return;
-  if (!(await checkPwd(old1))) return toast('当前密码错误', 'err');
-  const p1 = prompt('请输入新密码（留空则恢复为默认密码）：');
+  if (!(await checkPwd(old1))) return toast('密码错误', 'err');
+  const u = prompt('新账号名（留空保持不变）：');
+  if (u === null) return;
+  const p1 = prompt('新密码（留空保持不变）：');
   if (p1 === null) return;
-  const p2 = prompt('请再输入一遍新密码：');
-  if (p2 === null) return;
-  if (p1 !== p2) return toast('两次输入不一致', 'err');
+  if (p1) {
+    const p2 = prompt('请再输入一遍新密码：');
+    if (p2 === null) return;
+    if (p1 !== p2) return toast('两次输入不一致', 'err');
+  }
+  if (u.trim()) localStorage.setItem('admin_user', u.trim());
   if (p1) {
     await setPwdHash(p1);
     // 同步更新服务器端校验哈希（边缘函数代理按此校验请求合法性）
     try {
       await commitAdminHash(await sha256hex(p1));
-      toast('密码已更新', 'ok');
     } catch (e) {
-      toast('密码已在本浏览器更新，但同步到服务器失败：' + e.message, 'err');
+      toast('账号已更新，但同步服务器失败：' + e.message, 'err');
     }
-  } else {
-    localStorage.removeItem('admin_pwd_hash');
-    try { await commitAdminHash(await sha256hex(DEFAULT_PWD)); } catch {}
-    toast('密码已恢复为默认密码', 'ok');
+    sessionStorage.setItem('admin_auth', await sha256hex(p1));
   }
-  // 刷新本次会话的登录凭证
-  sessionStorage.setItem('admin_auth', await sha256hex(p1 || DEFAULT_PWD));
+  toast('已保存（当前账号：' + getAdminUser() + '）', 'ok');
 }
-window.changePwd = changePwd;
+window.changeAccount = changeAccount;
 
 routes.setup = () => {
   setNav('');
@@ -243,36 +244,32 @@ routes.login = () => {
     <div class="login-wrap" style="position:fixed;inset:0;z-index:100">
       <div class="login-box" style="max-width:340px;text-align:center">
         <h1 style="text-align:center">📝 博客后台</h1>
-        <input type="text" id="lg-user" value="admin" autocomplete="username" />
+        <input type="text" id="lg-user" placeholder="账号" autocomplete="username" />
         <input type="password" id="lg-pwd" placeholder="密码" autocomplete="current-password" />
         <div class="form-actions">
           <button class="btn primary" id="lg-go" style="width:100%">登 录</button>
         </div>
-        <p class="tip" id="lg-msg" style="margin-top:14px">忘记密码？<a id="lg-reset" href="javascript:void(0)">重置密码</a></p>
-        <p class="tip" style="margin-top:4px"><a id="lg-adv" href="#/setup">高级设置</a></p>
+        <p class="tip" id="lg-msg" style="margin-top:14px">请输入账号和密码。</p>
       </div>
     </div>`;
   const doLogin = async () => {
+    const user = $('#lg-user').value.trim();
     const pwd = $('#lg-pwd').value;
-    if (!pwd) { $('#lg-msg').firstChild.textContent = '请输入密码。'; return; }
+    if (!user || !pwd) { $('#lg-msg').textContent = '请输入账号和密码。'; return; }
+    if (user !== getAdminUser()) { $('#lg-msg').textContent = '❌ 账号或密码错误。'; $('#lg-pwd').value = ''; return; }
     if (await checkPwd(pwd)) {
       sessionStorage.setItem('admin_unlocked', '1');
       sessionStorage.setItem('admin_auth', await sha256hex(pwd));
       location.hash = '#/dashboard';
       route();
     } else {
-      $('#lg-msg').firstChild.textContent = '❌ 密码错误，请重新输入。';
+      $('#lg-msg').textContent = '❌ 账号或密码错误。';
       $('#lg-pwd').value = '';
     }
   };
   $('#lg-go').onclick = doLogin;
   $('#lg-pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
   $('#lg-user').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#lg-pwd').focus(); });
-  $('#lg-reset').onclick = async () => {
-    if (!(await confirmBox('将把后台密码重置为默认密码 ZW5jci5vcmcvMBMGA1U，确定？'))) return;
-    localStorage.removeItem('admin_pwd_hash');
-    toast('已重置为默认密码', 'ok');
-  };
 };
 
 document.getElementById('btn-logout').onclick = async () => {
@@ -472,7 +469,6 @@ function renderPostEditor(slug) {
 
 function fillPostEditor(slug, content) {
   const { fm, body } = parseFrontMatter(content);
-  const tags = Array.isArray(fm.tags) ? fm.tags.join(', ') : String(fm.tags || '').replace(/[\[\]']/g, '').replace(/,\s*/g, ', ');
   main.innerHTML = `
     <h1 class="page">${slug ? '编辑文章：' + esc(slug) : '新文章'}</h1>
     <div class="panel">
@@ -487,9 +483,6 @@ function fillPostEditor(slug, content) {
         <div style="flex:0 0 140px;display:flex;align-items:flex-end;padding-bottom:8px">
           <label style="cursor:pointer"><input type="checkbox" id="pe-draft" ${fm.draft === 'true' ? 'checked' : ''}> 草稿（不发布）</label>
         </div>
-      </div>
-      <div class="form-row">
-        <div><label class="f">标签（逗号分隔）</label><input type="text" id="pe-tags" value="${esc(tags)}"></div>
       </div>
       <label class="f">摘要（显示在文章卡片上）</label>
       <textarea id="pe-summary" rows="2">${esc((fm.summary || '').replace(/"/g, ''))}</textarea>
@@ -631,7 +624,6 @@ function fillPostEditor(slug, content) {
     let slugText = slug || $('#pe-slug').value.trim().replace(/[\\/:*?"<>|.]/g, '-').replace(/\s+/g, '-');
     if (!slugText) slugText = `post-${Date.now() % 10000}`;
     const bodyOut = mode === 'vis' ? visEl.innerHTML : srcEl.value;
-    const tagList = $('#pe-tags').value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
     const fmText = [
       '---',
       `title: ${JSON.stringify(title)}`,
@@ -639,7 +631,6 @@ function fillPostEditor(slug, content) {
       `draft: ${$('#pe-draft').checked}`,
       `summary: ${JSON.stringify($('#pe-summary').value.trim())}`,
       `category: ${JSON.stringify($('#pe-category').value.trim() || '未分类')}`,
-      `tags: [${tagList.map((t) => JSON.stringify(t)).join(', ')}]`,
       '---',
       '',
     ].join('\n');
@@ -716,27 +707,30 @@ async function renderMomentEditor(name) {
   main.innerHTML = `
     <h1 class="page">${name ? '编辑碎碎念' : '发一条碎碎念'}</h1>
     <div class="panel">
-      <div class="form-row">
-        <div><label class="f">时间</label><input type="text" id="me-date" value="${esc(fm.date)}"></div>
-        <div style="flex:0 0 140px"><label class="f">心情 emoji</label><input type="text" id="me-mood" value="${esc(fm.mood)}" placeholder="😊"></div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:1.4rem">${esc(fm.mood || '💭')}</span>
+        <input type="text" id="me-mood" value="${esc(fm.mood)}" placeholder="心情 emoji（可选）" style="flex:0 0 180px">
       </div>
-      <label class="f">内容（支持 Markdown）</label>
-      <textarea id="me-body" rows="5">${esc(body)}</textarea>
+      <label class="f">内容</label>
+      <textarea id="me-body" rows="5" placeholder="想说点什么…">${esc(body)}</textarea>
       <div class="form-actions">
         <button class="btn primary" id="me-save">保存（加入发布队列）</button>
         <a class="btn ghost" href="#/moments">返回</a>
       </div>
     </div>`;
   $('#me-save').onclick = () => {
+    const bodyText = $('#me-body').value.trim();
+    if (!bodyText) return toast('内容不能为空', 'err');
+    const dateStr = fmDate();
     const text = [
       '---',
-      `date: ${$('#me-date').value.trim() || fmDate()}`,
+      `date: ${dateStr}`,
       `mood: '${($('#me-mood').value || '').replace(/'/g, '')}'`,
       '---',
       '',
-      $('#me-body').value,
+      bodyText,
     ].join('\n');
-    const finalName = name || `${$('#me-date').value.slice(0, 10) || '2026-01-01'}-${Date.now() % 1000}.md`;
+    const finalName = name || `${dateStr.slice(0, 10)}-${Date.now() % 1000}.md`;
     const key = `${MOMENTS_DIR}/${finalName}`;
     enqueue({ key, path: key, action: 'write', content: text, title: '碎碎念 ' + finalName, time: Date.now() });
     toast('已加入发布队列', 'ok');
@@ -960,8 +954,17 @@ routes.settings = async () => {
       <textarea id="st-ann" rows="2">${esc(site.announcement || '')}</textarea>
       <label class="f">页脚文字（支持 {year} {author} 变量）</label>
       <input type="text" id="st-footer" value="${esc(site.footerText)}">
-      <label class="f">页脚附加行（备案号等，留空不显示）</label>
-      <input type="text" id="st-beian" value="${esc(site.beian || '')}">
+      <div class="form-row">
+        <div><label class="f">导航栏 logo 图片地址（留空只显示站名）</label><input type="text" id="st-logo" value="${esc(site.logo || '')}" placeholder="https://…/logo.png"></div>
+        <div style="flex:0 0 220px"><label class="f">ICP 备案号</label><input type="text" id="st-beian-icp" value="${esc(site.beianIcp || '')}" placeholder="如 京ICP备xxxxxxxx号"></div>
+      </div>
+      <div class="form-row">
+        <div><label class="f">公安备案号</label><input type="text" id="st-beian-police" value="${esc(site.beianPolice || '')}" placeholder="如 京公网安备 xxxxxxxxxxxx号"></div>
+        <div></div>
+      </div>
+      <p style="color:var(--muted);font-size:.82rem;margin:0 0 8px">填写备案号后，页脚会自动生成指向工信部（beian.miit.gov.cn）和公安备案系统（beian.gov.cn）的超链接。</p>
+      <label class="f">友链页「申请友链」说明（留空则不显示该区块）</label>
+      <textarea id="st-links-intro" rows="4">${esc(site.linksIntro || '')}</textarea>
 
       <h2 class="sec">导航栏</h2>
       <table class="list" id="nav-table">
@@ -1022,7 +1025,10 @@ routes.settings = async () => {
       tocEnabled: $('#st-toc').checked,
       announcement: $('#st-ann').value,
       footerText: $('#st-footer').value,
-      beian: $('#st-beian').value.trim(),
+      logo: $('#st-logo').value.trim(),
+      beianIcp: $('#st-beian-icp').value.trim(),
+      beianPolice: $('#st-beian-police').value.trim(),
+      linksIntro: $('#st-links-intro').value,
       accentColor: $('#st-accent').value.trim(),
       colorMode: $('#st-color').value,
       nav: collect('nav-table', 'nv-text', 'nv-url'),
