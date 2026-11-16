@@ -118,23 +118,40 @@ function setNav(view) {
 }
 
 // ---------- 登录 / 首次配置 ----------
-// 密码体系：admin_pwd 保存在本浏览器；admin_unlocked 表示本次会话已通过密码验证
+// 密码体系：只保存 SHA-256 哈希（admin_pwd_hash），绝不保存明文、不预填；
+// 解锁状态（admin_unlocked）只存 sessionStorage，关闭浏览器后需要重新输入密码
 const DEFAULT_PWD = 'ZW5jci5vcmcvMBMGA1U';
-function getPwd() { return localStorage.getItem('admin_pwd') || DEFAULT_PWD; }
-function isUnlocked() { return localStorage.getItem('admin_unlocked') === '1'; }
+async function sha256hex(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function checkPwd(p) {
+  const stored = localStorage.getItem('admin_pwd_hash');
+  const target = stored || (await sha256hex(DEFAULT_PWD));
+  return (await sha256hex(p)) === target;
+}
+async function setPwdHash(p) { localStorage.setItem('admin_pwd_hash', await sha256hex(p)); }
+function isUnlocked() { return sessionStorage.getItem('admin_unlocked') === '1'; }
+
+// 迁移：旧版本存过明文密码 → 转为哈希并删除明文
+(async () => {
+  const old = localStorage.getItem('admin_pwd');
+  if (old) { await setPwdHash(old); localStorage.removeItem('admin_pwd'); }
+  if (localStorage.getItem('admin_unlocked')) { sessionStorage.setItem('admin_unlocked', '1'); localStorage.removeItem('admin_unlocked'); }
+})();
 
 // 修改管理密码
-function changePwd() {
+async function changePwd() {
   const old1 = prompt('请输入当前管理密码：');
   if (old1 === null) return;
-  if (old1 !== getPwd()) return toast('当前密码错误', 'err');
+  if (!(await checkPwd(old1))) return toast('当前密码错误', 'err');
   const p1 = prompt('请输入新密码（留空则恢复为默认密码）：');
   if (p1 === null) return;
   const p2 = prompt('请再输入一遍新密码：');
   if (p2 === null) return;
   if (p1 !== p2) return toast('两次输入不一致', 'err');
-  if (p1) localStorage.setItem('admin_pwd', p1);
-  else localStorage.removeItem('admin_pwd');
+  if (p1) await setPwdHash(p1);
+  else localStorage.removeItem('admin_pwd_hash');
   toast('密码已更新' + (p1 ? '' : '（恢复默认）'), 'ok');
 }
 window.changePwd = changePwd;
@@ -148,8 +165,8 @@ routes.setup = () => {
         <h1>📝 首次使用 · 初始化后台</h1>
         <p class="tip">设置一个管理密码（仅保存在本浏览器，用于进入后台），再连接你的博客仓库。Token 需要 classic 类型并勾选 <b>repo</b> 权限，<a href="https://github.com/settings/tokens" target="_blank">点此生成</a>。</p>
         <div class="form-row">
-          <div><label class="f">管理密码</label><input type="password" id="su-pwd" value="${esc(getPwd())}" placeholder="设置后台密码"></div>
-          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" value="${esc(getPwd())}" placeholder="再输一遍"></div>
+          <div><label class="f">管理密码</label><input type="password" id="su-pwd" placeholder="设置后台密码"></div>
+          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" placeholder="再输一遍"></div>
         </div>
         <label class="f">GitHub Token</label>
         <input type="password" id="su-token" value="${esc(c.token)}" placeholder="ghp_xxxx" />
@@ -185,8 +202,8 @@ routes.setup = () => {
         branch: $('#su-branch').value.trim() || 'main',
       });
       await listDir('src/content'); // 验证 token + 仓库
-      localStorage.setItem('admin_pwd', pwd);
-      localStorage.setItem('admin_unlocked', '1');
+      await setPwdHash(pwd);
+      sessionStorage.setItem('admin_unlocked', '1');
       invalidateSiteCache();
       $('#repo-info').textContent = `${getConfig().owner}/${getConfig().repo}`;
       toast('初始化成功，已进入后台', 'ok');
@@ -214,9 +231,9 @@ routes.login = () => {
         <p class="tip" id="lg-msg" style="margin-top:12px">忘记密码？<a id="lg-reset" href="javascript:void(0)">重置全部配置</a>（会清除本浏览器保存的密码和 Token，重新初始化）。</p>
       </div>
     </div>`;
-  const doLogin = () => {
-    if ($('#lg-pwd').value === getPwd()) {
-      localStorage.setItem('admin_unlocked', '1');
+  const doLogin = async () => {
+    if (await checkPwd($('#lg-pwd').value)) {
+      sessionStorage.setItem('admin_unlocked', '1');
       location.hash = '#/dashboard';
       route();
     } else {
@@ -228,7 +245,8 @@ routes.login = () => {
   $('#lg-pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
   $('#lg-reset').onclick = async () => {
     if (!(await confirmBox('将清除本浏览器保存的后台密码、GitHub Token 等全部配置，需要重新初始化。确定？'))) return;
-    ['admin_pwd', 'admin_unlocked', 'gh_token', 'gh_owner', 'gh_repo', 'gh_branch', 'twikoo_token', 'twikoo_url', 'site_cache', 'publish_queue'].forEach((k) => localStorage.removeItem(k));
+    ['admin_pwd', 'admin_pwd_hash', 'admin_unlocked', 'gh_token', 'gh_owner', 'gh_repo', 'gh_branch', 'twikoo_token', 'twikoo_url', 'site_cache', 'publish_queue'].forEach((k) => localStorage.removeItem(k));
+    sessionStorage.removeItem('admin_unlocked');
     location.hash = '#/setup';
     route();
   };
@@ -236,7 +254,10 @@ routes.login = () => {
 
 document.getElementById('btn-logout').onclick = async () => {
   if (!(await confirmBox('退出后台？（仅清除登录状态，保留仓库配置，下次输入密码进入）'))) return;
-  ['admin_unlocked', 'twikoo_token'].forEach((k) => localStorage.removeItem(k));
+  ['admin_pwd_hash', 'admin_unlocked', 'twikoo_token'].forEach((k) => {
+    if (k === 'admin_unlocked') sessionStorage.removeItem(k);
+    else localStorage.removeItem(k);
+  });
   location.hash = '#/login';
   route();
 };
@@ -377,6 +398,8 @@ routes.posts = async (param) => {
   setNav('posts');
   main.innerHTML = '<h1 class="page">文章管理</h1><div class="panel">加载中…</div>';
   try {
+    let siteUrl = '';
+    try { siteUrl = (await ensureSiteCache()).siteUrl || ''; } catch {}
     const items = await listDir(POSTS_DIR);
     const files = items.filter((f) => f.name.endsWith('.md'));
     const rows = await Promise.all(files.map(async (f) => {
@@ -396,7 +419,7 @@ routes.posts = async (param) => {
           ${rows.map((r) => `
             <tr>
               <td>${esc(r.title)}</td>
-              <td><a href="${esc(site?.siteUrl || '')}/${encodeURIComponent(r.slug)}.html" target="_blank" style="color:var(--muted);font-size:.82rem">/${esc(r.slug)}.html</a></td>
+              <td><a href="${esc(siteUrl)}/${encodeURIComponent(r.slug)}.html" target="_blank" style="color:var(--muted);font-size:.82rem">/${esc(r.slug)}.html</a></td>
               <td>${esc(r.category)}</td>
               <td>${esc((r.date || '').replace('T', ' ').slice(0, 16))}</td>
               <td>${r.draft ? '<span class="badge orange">草稿</span>' : '<span class="badge green">已发布</span>'}</td>
