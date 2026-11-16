@@ -7,6 +7,7 @@ import {
   getConfig, saveConfig, isConfigured,
   readFile, listDir, utf8ToB64,
   getQueue, enqueue, dequeue, publishQueue, triggerRebuild, updatePublishBar,
+  commitAdminHash,
 } from './github.js';
 import {
   twikooLogin, twikooLogged, twikooLogout,
@@ -83,13 +84,10 @@ const routes = {};
 function route() {
   const hash = location.hash.replace(/^#\//, '') || 'dashboard';
   const [view, ...rest] = hash.split('/');
-  // 未配置 → 初始化页；已配置但未通过密码验证 → 登录页
-  if (view !== 'setup' && view !== 'login' && !isConfigured()) return renderAt('setup');
-  if (view !== 'login' && isConfigured() && !isUnlocked()) return renderAt('login');
-  if ((view === 'setup' && isConfigured()) || (view === 'login' && isUnlocked())) {
-    location.hash = '#/dashboard';
-    return;
-  }
+  // 高级设置始终可进入；其余页面需要先输入密码解锁
+  if (view === 'setup') return renderAt('setup');
+  if (!isConfigured()) return renderAt('setup');
+  if (!isUnlocked()) return renderAt('login');
   const fn = routes[view] || routes.dashboard;
   document.querySelectorAll('#side-nav a, #btn-logout').forEach((el) => (el.style.visibility = 'visible'));
   fn(rest.join('/'));
@@ -150,26 +148,36 @@ async function changePwd() {
   const p2 = prompt('请再输入一遍新密码：');
   if (p2 === null) return;
   if (p1 !== p2) return toast('两次输入不一致', 'err');
-  if (p1) await setPwdHash(p1);
-  else localStorage.removeItem('admin_pwd_hash');
-  toast('密码已更新' + (p1 ? '' : '（恢复默认）'), 'ok');
+  if (p1) {
+    await setPwdHash(p1);
+    // 同步更新服务器端校验哈希（边缘函数代理按此校验请求合法性）
+    try {
+      await commitAdminHash(await sha256hex(p1));
+      toast('密码已更新', 'ok');
+    } catch (e) {
+      toast('密码已在本浏览器更新，但同步到服务器失败：' + e.message, 'err');
+    }
+  } else {
+    localStorage.removeItem('admin_pwd_hash');
+    try { await commitAdminHash(await sha256hex(DEFAULT_PWD)); } catch {}
+    toast('密码已恢复为默认密码', 'ok');
+  }
+  // 刷新本次会话的登录凭证
+  sessionStorage.setItem('admin_auth', await sha256hex(p1 || DEFAULT_PWD));
 }
 window.changePwd = changePwd;
 
 routes.setup = () => {
   setNav('');
   const c = getConfig();
+  const locked = !isUnlocked();
   main.innerHTML = `
     <div class="login-wrap" style="position:fixed;inset:0;z-index:100">
       <div class="login-box">
-        <h1>📝 首次使用 · 初始化后台</h1>
-        <p class="tip">设置一个管理密码（仅保存在本浏览器，用于进入后台），再连接你的博客仓库。Token 需要 classic 类型并勾选 <b>repo</b> 权限，<a href="https://github.com/settings/tokens" target="_blank">点此生成</a>。</p>
-        <div class="form-row">
-          <div><label class="f">管理密码</label><input type="password" id="su-pwd" placeholder="设置后台密码"></div>
-          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" placeholder="再输一遍"></div>
-        </div>
-        <label class="f">GitHub Token</label>
-        <input type="password" id="su-token" value="${esc(c.token)}" placeholder="ghp_xxxx" />
+        <h1>⚙️ 高级设置 · 仓库连接</h1>
+        <p class="tip">这里用来更换 GitHub Token 或切换仓库（一般不用动）。改动会保存到当前浏览器。</p>
+        <label class="f">GitHub Token（可选，留空则使用服务器内置连接）</label>
+        <input type="password" id="su-token" value="${esc(c.token)}" placeholder="一般不用填" />
         <div class="form-row">
           <div>
             <label class="f">仓库 Owner</label>
@@ -182,15 +190,24 @@ routes.setup = () => {
         </div>
         <label class="f">分支</label>
         <input type="text" id="su-branch" value="${esc(c.branch)}" placeholder="main" />
+        <div class="form-row">
+          <div><label class="f">新密码（可选）</label><input type="password" id="su-pwd" placeholder="要改密码才填"></div>
+          <div><label class="f">确认新密码</label><input type="password" id="su-pwd2" placeholder="再输一遍"></div>
+        </div>
         <div class="form-actions">
           <button class="btn primary" id="su-save" style="width:100%">保存并验证</button>
+          <a class="btn ghost" id="su-back" style="width:100%;text-align:center">${locked ? '返回登录' : '返回后台'}</a>
         </div>
         <p class="tip" id="su-msg" style="margin-top:12px">保存时会调用 GitHub API 验证仓库是否可访问。</p>
       </div>
     </div>`;
+  $('#su-back').onclick = () => { location.hash = locked ? '#/login' : '#/dashboard'; route(); };
   $('#su-save').onclick = async () => {
-    const pwd = $('#su-pwd').value;
-    if (!pwd || pwd !== $('#su-pwd2').value) { $('#su-msg').textContent = '❌ 两次密码不一致或为空'; return; }
+    const p1 = $('#su-pwd').value, p2 = $('#su-pwd2').value;
+    if (p1 || p2) {
+      if (p1 !== p2) { $('#su-msg').textContent = '❌ 两次密码不一致'; return; }
+      await setPwdHash(p1);
+    }
     const btn = $('#su-save');
     btn.disabled = true;
     $('#su-msg').textContent = '正在验证仓库访问…';
@@ -202,11 +219,15 @@ routes.setup = () => {
         branch: $('#su-branch').value.trim() || 'main',
       });
       await listDir('src/content'); // 验证 token + 仓库
-      await setPwdHash(pwd);
+      if (p1) {
+        const h = await sha256hex(p1);
+        sessionStorage.setItem('admin_auth', h);
+        try { await commitAdminHash(h); } catch (e) { toast('哈希同步失败：' + e.message, 'err'); }
+      }
       sessionStorage.setItem('admin_unlocked', '1');
       invalidateSiteCache();
       $('#repo-info').textContent = `${getConfig().owner}/${getConfig().repo}`;
-      toast('初始化成功，已进入后台', 'ok');
+      toast('保存成功', 'ok');
       location.hash = '#/dashboard';
       route();
     } catch (e) {
@@ -220,35 +241,37 @@ routes.login = () => {
   setNav('');
   main.innerHTML = `
     <div class="login-wrap" style="position:fixed;inset:0;z-index:100">
-      <div class="login-box">
-        <h1>🔐 博客后台登录</h1>
-        <p class="tip">当前已连接仓库：<b>${esc(getConfig().owner)}/${esc(getConfig().repo)}</b>（分支 ${esc(getConfig().branch)}）。输入管理密码进入后台。</p>
-        <label class="f">管理密码</label>
-        <input type="password" id="lg-pwd" placeholder="后台管理密码" />
+      <div class="login-box" style="max-width:340px;text-align:center">
+        <h1 style="text-align:center">📝 博客后台</h1>
+        <input type="text" id="lg-user" value="admin" autocomplete="username" />
+        <input type="password" id="lg-pwd" placeholder="密码" autocomplete="current-password" />
         <div class="form-actions">
           <button class="btn primary" id="lg-go" style="width:100%">登 录</button>
         </div>
-        <p class="tip" id="lg-msg" style="margin-top:12px">忘记密码？<a id="lg-reset" href="javascript:void(0)">重置全部配置</a>（会清除本浏览器保存的密码和 Token，重新初始化）。</p>
+        <p class="tip" id="lg-msg" style="margin-top:14px">忘记密码？<a id="lg-reset" href="javascript:void(0)">重置密码</a></p>
+        <p class="tip" style="margin-top:4px"><a id="lg-adv" href="#/setup">高级设置</a></p>
       </div>
     </div>`;
   const doLogin = async () => {
-    if (await checkPwd($('#lg-pwd').value)) {
+    const pwd = $('#lg-pwd').value;
+    if (!pwd) { $('#lg-msg').firstChild.textContent = '请输入密码。'; return; }
+    if (await checkPwd(pwd)) {
       sessionStorage.setItem('admin_unlocked', '1');
+      sessionStorage.setItem('admin_auth', await sha256hex(pwd));
       location.hash = '#/dashboard';
       route();
     } else {
-      $('#lg-msg').firstChild.textContent = '❌ 密码错误。';
+      $('#lg-msg').firstChild.textContent = '❌ 密码错误，请重新输入。';
       $('#lg-pwd').value = '';
     }
   };
   $('#lg-go').onclick = doLogin;
   $('#lg-pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  $('#lg-user').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#lg-pwd').focus(); });
   $('#lg-reset').onclick = async () => {
-    if (!(await confirmBox('将清除本浏览器保存的后台密码、GitHub Token 等全部配置，需要重新初始化。确定？'))) return;
-    ['admin_pwd', 'admin_pwd_hash', 'admin_unlocked', 'gh_token', 'gh_owner', 'gh_repo', 'gh_branch', 'twikoo_token', 'twikoo_url', 'site_cache', 'publish_queue'].forEach((k) => localStorage.removeItem(k));
-    sessionStorage.removeItem('admin_unlocked');
-    location.hash = '#/setup';
-    route();
+    if (!(await confirmBox('将把后台密码重置为默认密码 ZW5jci5vcmcvMBMGA1U，确定？'))) return;
+    localStorage.removeItem('admin_pwd_hash');
+    toast('已重置为默认密码', 'ok');
   };
 };
 

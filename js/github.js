@@ -9,11 +9,12 @@ const LS = {
 };
 
 export function getConfig() {
+  const def = (typeof window !== 'undefined' && window.DEFAULT_GH_CONFIG) || {};
   return {
-    token: LS.get('gh_token') || '',
-    owner: LS.get('gh_owner') || 'imicq',
-    repo: LS.get('gh_repo') || 'astro-blog',
-    branch: LS.get('gh_branch') || 'main',
+    token: LS.get('gh_token') || def.token || '',
+    owner: LS.get('gh_owner') || def.owner || 'imicq',
+    repo: LS.get('gh_repo') || def.repo || 'astro-blog',
+    branch: LS.get('gh_branch') || def.branch || 'main',
   };
 }
 
@@ -26,20 +27,31 @@ export function saveConfig(cfg) {
 
 export function isConfigured() {
   const c = getConfig();
-  return c.token && c.owner && c.repo;
+  return !!(c.owner && c.repo);
 }
 
 const API = 'https://api.github.com';
 
+// gh() 请求路由：
+//  - 本浏览器保存了 Token（高级设置里填过）→ 直连 api.github.com
+//  - 否则走同源边缘函数代理 /api/*（Token 在服务器环境变量里，前端不接触）
 async function gh(method, path, body) {
-  const c = getConfig();
-  const res = await fetch(`${API}${path}`, {
+  const localToken = LS.get('gh_token');
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+  };
+  if (localToken) {
+    headers.Authorization = `Bearer ${localToken}`;
+  } else {
+    const auth = sessionStorage.getItem('admin_auth');
+    if (!auth) throw new Error('登录状态已失效，请重新登录后台');
+    headers['x-admin-auth'] = auth;
+  }
+  const base = localToken ? API : '/api';
+  const res = await fetch(`${base}${path}`, {
     method,
-    headers: {
-      Authorization: `Bearer ${c.token}`,
-      Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -164,4 +176,25 @@ export async function triggerRebuild() {
   enqueue({ key: path, path, action: 'write', content: stamp, title: '触发重新构建' });
   const r = await publishQueue();
   return r;
+}
+
+// ---------- 管理密码哈希同步 ----------
+// 密码哈希存于本仓库（astro-admin）的 admin.hash，边缘函数代理读取它校验请求合法性。
+// 后台改密码时调用此函数同步远端，让新密码立即对代理生效。
+export async function commitAdminHash(hashHex) {
+  const def = (typeof window !== 'undefined' && window.DEFAULT_GH_CONFIG) || {};
+  const owner = def.owner || 'imicq';
+  const repo = 'astro-admin';
+  const branch = 'main';
+  let sha;
+  try {
+    const r = await gh('GET', `/repos/${owner}/${repo}/contents/admin.hash?ref=${branch}`);
+    sha = r.sha;
+  } catch { /* 文件尚不存在 */ }
+  await gh('PUT', `/repos/${owner}/${repo}/contents/admin.hash`, {
+    message: 'chore(admin): update admin password hash',
+    content: utf8ToB64(hashHex + '\n'),
+    sha,
+    branch,
+  });
 }
