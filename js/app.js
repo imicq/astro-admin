@@ -118,8 +118,25 @@ function setNav(view) {
 
 // ---------- 登录 / 首次配置 ----------
 // 密码体系：admin_pwd 保存在本浏览器；admin_unlocked 表示本次会话已通过密码验证
-function getPwd() { return localStorage.getItem('admin_pwd') || ''; }
+const DEFAULT_PWD = 'ZW5jci5vcmcvMBMGA1U';
+function getPwd() { return localStorage.getItem('admin_pwd') || DEFAULT_PWD; }
 function isUnlocked() { return localStorage.getItem('admin_unlocked') === '1'; }
+
+// 修改管理密码
+function changePwd() {
+  const old1 = prompt('请输入当前管理密码：');
+  if (old1 === null) return;
+  if (old1 !== getPwd()) return toast('当前密码错误', 'err');
+  const p1 = prompt('请输入新密码（留空则恢复为默认密码）：');
+  if (p1 === null) return;
+  const p2 = prompt('请再输入一遍新密码：');
+  if (p2 === null) return;
+  if (p1 !== p2) return toast('两次输入不一致', 'err');
+  if (p1) localStorage.setItem('admin_pwd', p1);
+  else localStorage.removeItem('admin_pwd');
+  toast('密码已更新' + (p1 ? '' : '（恢复默认）'), 'ok');
+}
+window.changePwd = changePwd;
 
 routes.setup = () => {
   setNav('');
@@ -130,8 +147,8 @@ routes.setup = () => {
         <h1>📝 首次使用 · 初始化后台</h1>
         <p class="tip">设置一个管理密码（仅保存在本浏览器，用于进入后台），再连接你的博客仓库。Token 需要 classic 类型并勾选 <b>repo</b> 权限，<a href="https://github.com/settings/tokens" target="_blank">点此生成</a>。</p>
         <div class="form-row">
-          <div><label class="f">管理密码</label><input type="password" id="su-pwd" placeholder="设置后台密码"></div>
-          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" placeholder="再输一遍"></div>
+          <div><label class="f">管理密码</label><input type="password" id="su-pwd" value="${esc(getPwd())}" placeholder="设置后台密码"></div>
+          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" value="${esc(getPwd())}" placeholder="再输一遍"></div>
         </div>
         <label class="f">GitHub Token</label>
         <input type="password" id="su-token" value="${esc(c.token)}" placeholder="ghp_xxxx" />
