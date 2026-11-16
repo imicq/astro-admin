@@ -1,7 +1,7 @@
 // ============================================================
 // Twikoo 评论管理 API 封装
 // 适配 EdgeOne Makers 版（twikoo-eo）协议：
-//   登录=LOGIN，评论列表=GET_COMMENTS_FOR_ADMIN，
+//   登录=LOGIN，评论列表=COMMENT_GET_FOR_ADMIN，
 //   显示/隐藏=COMMENT_SET_FOR_ADMIN，删除=COMMENT_DELETE_FOR_ADMIN
 // 鉴权方式：accessToken 传管理密码原文（后端校验 md5(token)==ADMIN_PASS）
 // ============================================================
@@ -68,7 +68,7 @@ function token() {
 }
 
 export async function getAdminComments(page = 1, pageSize = 20) {
-  const d = await twikoo('GET_COMMENTS_FOR_ADMIN', { accessToken: token(), page, per: pageSize });
+  const d = await twikoo('COMMENT_GET_FOR_ADMIN', { accessToken: token(), page, per: pageSize });
   // 返回结构：{ code:0, count, data: [评论数组] }
   return { data: { comments: Array.isArray(d.data) ? d.data : [], count: d.count ?? 0 } };
 }
