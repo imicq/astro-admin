@@ -861,6 +861,13 @@ async function renderCommentList(page) {
       };
     });
   } catch (e) {
+    // 登录态失效（后端校验 accessToken 失败）→ 清除旧 token 引导重新登录
+    if (e.code === 1024 || (e.messageRaw || '').includes('请先登录')) {
+      twikooLogout();
+      renderTwikooLogin();
+      toast('登录已失效，请重新输入 Twikoo 管理密码', 'err');
+      return;
+    }
     main.innerHTML = `<h1 class="page">评论管理</h1><div class="panel">加载失败：${esc(e.message)}<br>
       <button class="btn" onclick="location.hash='#/comments';location.reload()">重试</button></div>`;
   }

@@ -36,21 +36,30 @@ async function twikoo(event, payload = {}) {
 export async function twikooLogin(password) {
   if (!password) throw new Error('请输入密码');
   if (typeof md5 !== 'function') throw new Error('md5 组件未加载，请刷新页面重试');
-  // 与官方前端一致：传输与鉴权均使用 md5(密码)
+  // 后端 LOGIN 校验 md5(传入密码) === ADMIN_PASS
   const m = md5(password);
-  let d;
   try {
-    d = await twikoo('LOGIN', { password: m });
+    await twikoo('LOGIN', { password: m });
   } catch (e) {
-    // 未配置管理密码 → 首次输入的密码自动初始化为管理密码
+    // 未配置管理密码 → 初始化：后端存 md5(传入值)，传原文使 ADMIN_PASS = md5(原文)
     if ((e.messageRaw || '').includes('未配置管理密码')) {
-      await twikoo('SET_PASSWORD', { password: m });
-      d = await twikoo('LOGIN', { password: m });
+      await twikoo('SET_PASSWORD', { password });
+      await twikoo('LOGIN', { password: m });
     } else {
       throw e;
     }
   }
-  // 后端 isAdmin 校验 md5(accessToken) === ADMIN_PASS，存 md5(密码) 即可通过
+  // 后端 isAdmin 校验 md5(accessToken) === ADMIN_PASS，因此 accessToken 需要
+  // 传「密码原文」或 md5(密码)（取决于 ADMIN_PASS 当初是怎么写入的）。
+  // 用一次真实的 COMMENT_GET_FOR_ADMIN 探测哪种形式有效，就存哪种。
+  for (const cand of [password, m]) {
+    try {
+      await twikoo('COMMENT_GET_FOR_ADMIN', { accessToken: cand, page: 1, per: 1 });
+      LS.set('twikoo_token', cand);
+      return true;
+    } catch (_) { /* 尝试下一种 */ }
+  }
+  // 都没通过也先存 md5（与官方前端一致），登录态保留但评论接口可能提示重新登录
   LS.set('twikoo_token', m);
   return true;
 }
