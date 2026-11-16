@@ -12,6 +12,8 @@
   --radius: 10px;
 }
 * { box-sizing: border-box; }
+/* 关键修复：hidden 属性必须生效（否则确认弹窗/发布条会永远显示挡住页面） */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;

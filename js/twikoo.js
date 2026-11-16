@@ -11,13 +11,16 @@ const LS = {
 import { getConfig } from './github.js';
 
 async function twikoo(event, payload = {}) {
-  const envId = JSON.parse(LS.get('site_cache') || '{"twikooEnvId":""}').twikooEnvId || getConfig().twikooEnvId || '';
+  const envId =
+    LS.get('twikoo_url') ||
+    JSON.parse(LS.get('site_cache') || '{"twikooEnvId":""}').twikooEnvId || '';
   if (!envId) throw new Error('未配置 Twikoo 环境地址，请先到「站点设置」读取配置');
   const res = await fetch(envId, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ event, ...payload }),
   });
+  if (!res.ok) throw new Error(`Twikoo ${event} 请求失败：HTTP ${res.status}`);
   const data = await res.json();
   if (data.code !== 0) throw new Error(data.message || `Twikoo ${event} 失败`);
   return data;

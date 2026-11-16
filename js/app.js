@@ -60,6 +60,7 @@ async function ensureSiteCache() {
   if (cache) return JSON.parse(cache);
   const { content } = await readFile('src/data/site.json');
   localStorage.setItem('site_cache', content);
+  try { localStorage.setItem('twikoo_url', JSON.parse(content).twikooEnvId || ''); } catch {}
   return JSON.parse(content);
 }
 function invalidateSiteCache() { localStorage.removeItem('site_cache'); }
@@ -81,8 +82,22 @@ const routes = {};
 function route() {
   const hash = location.hash.replace(/^#\//, '') || 'dashboard';
   const [view, ...rest] = hash.split('/');
-  if (view === 'login' || (!isConfigured() && view !== 'setup')) return renderSetup();
-  (routes[view] || routes.dashboard)(rest.join('/'));
+  // 未配置 → 初始化页；已配置但未通过密码验证 → 登录页
+  if (view !== 'setup' && view !== 'login' && !isConfigured()) return renderAt('setup');
+  if (view !== 'login' && isConfigured() && !isUnlocked()) return renderAt('login');
+  if ((view === 'setup' && isConfigured()) || (view === 'login' && isUnlocked())) {
+    location.hash = '#/dashboard';
+    return;
+  }
+  const fn = routes[view] || routes.dashboard;
+  document.querySelectorAll('#side-nav a, #btn-logout').forEach((el) => (el.style.visibility = 'visible'));
+  fn(rest.join('/'));
+}
+
+// 登录/初始化页隐藏侧栏操作入口，防止未登录误点
+function renderAt(view) {
+  document.querySelectorAll('#side-nav a, #btn-logout').forEach((el) => (el.style.visibility = 'hidden'));
+  routes[view]();
 }
 
 window.addEventListener('hashchange', route);
@@ -102,15 +117,22 @@ function setNav(view) {
 }
 
 // ---------- 登录 / 首次配置 ----------
+// 密码体系：admin_pwd 保存在本浏览器；admin_unlocked 表示本次会话已通过密码验证
+function getPwd() { return localStorage.getItem('admin_pwd') || ''; }
+function isUnlocked() { return localStorage.getItem('admin_unlocked') === '1'; }
+
 routes.setup = () => {
   setNav('');
   const c = getConfig();
   main.innerHTML = `
     <div class="login-wrap" style="position:fixed;inset:0;z-index:100">
       <div class="login-box">
-        <h1>📝 连接你的博客仓库</h1>
-        <p class="tip">需要一个 GitHub Personal Access Token（classic，勾选 <b>repo</b> 权限），
-        在 <a href="https://github.com/settings/tokens" target="_blank">这里</a> 生成。</p>
+        <h1>📝 首次使用 · 初始化后台</h1>
+        <p class="tip">设置一个管理密码（仅保存在本浏览器，用于进入后台），再连接你的博客仓库。Token 需要 classic 类型并勾选 <b>repo</b> 权限，<a href="https://github.com/settings/tokens" target="_blank">点此生成</a>。</p>
+        <div class="form-row">
+          <div><label class="f">管理密码</label><input type="password" id="su-pwd" placeholder="设置后台密码"></div>
+          <div><label class="f">确认密码</label><input type="password" id="su-pwd2" placeholder="再输一遍"></div>
+        </div>
         <label class="f">GitHub Token</label>
         <input type="password" id="su-token" value="${esc(c.token)}" placeholder="ghp_xxxx" />
         <div class="form-row">
@@ -126,29 +148,77 @@ routes.setup = () => {
         <label class="f">分支</label>
         <input type="text" id="su-branch" value="${esc(c.branch)}" placeholder="main" />
         <div class="form-actions">
-          <button class="btn primary" id="su-save" style="width:100%">保存并进入后台</button>
+          <button class="btn primary" id="su-save" style="width:100%">保存并验证</button>
         </div>
-        <p class="tip" style="margin-top:12px">说明：Token 仅保存在你当前浏览器的本地存储中，用于调用 GitHub API 编辑仓库文件。</p>
+        <p class="tip" id="su-msg" style="margin-top:12px">保存时会调用 GitHub API 验证仓库是否可访问。</p>
       </div>
     </div>`;
-  $('#su-save').onclick = () => {
-    saveConfig({
-      token: $('#su-token').value.trim(),
-      owner: $('#su-owner').value.trim(),
-      repo: $('#su-repo').value.trim(),
-      branch: $('#su-branch').value.trim() || 'main',
-    });
-    invalidateSiteCache();
-    $('#repo-info').textContent = `${getConfig().owner}/${getConfig().repo}`;
-    toast('已保存配置', 'ok');
-    location.hash = '#/dashboard';
+  $('#su-save').onclick = async () => {
+    const pwd = $('#su-pwd').value;
+    if (!pwd || pwd !== $('#su-pwd2').value) { $('#su-msg').textContent = '❌ 两次密码不一致或为空'; return; }
+    const btn = $('#su-save');
+    btn.disabled = true;
+    $('#su-msg').textContent = '正在验证仓库访问…';
+    try {
+      saveConfig({
+        token: $('#su-token').value.trim(),
+        owner: $('#su-owner').value.trim(),
+        repo: $('#su-repo').value.trim(),
+        branch: $('#su-branch').value.trim() || 'main',
+      });
+      await listDir('src/content'); // 验证 token + 仓库
+      localStorage.setItem('admin_pwd', pwd);
+      localStorage.setItem('admin_unlocked', '1');
+      invalidateSiteCache();
+      $('#repo-info').textContent = `${getConfig().owner}/${getConfig().repo}`;
+      toast('初始化成功，已进入后台', 'ok');
+      location.hash = '#/dashboard';
+      route();
+    } catch (e) {
+      $('#su-msg').textContent = '❌ ' + e.message;
+      btn.disabled = false;
+    }
+  };
+};
+
+routes.login = () => {
+  setNav('');
+  main.innerHTML = `
+    <div class="login-wrap" style="position:fixed;inset:0;z-index:100">
+      <div class="login-box">
+        <h1>🔐 博客后台登录</h1>
+        <p class="tip">当前已连接仓库：<b>${esc(getConfig().owner)}/${esc(getConfig().repo)}</b>（分支 ${esc(getConfig().branch)}）。输入管理密码进入后台。</p>
+        <label class="f">管理密码</label>
+        <input type="password" id="lg-pwd" placeholder="后台管理密码" />
+        <div class="form-actions">
+          <button class="btn primary" id="lg-go" style="width:100%">登 录</button>
+        </div>
+        <p class="tip" id="lg-msg" style="margin-top:12px">忘记密码？<a id="lg-reset" href="javascript:void(0)">重置全部配置</a>（会清除本浏览器保存的密码和 Token，重新初始化）。</p>
+      </div>
+    </div>`;
+  const doLogin = () => {
+    if ($('#lg-pwd').value === getPwd()) {
+      localStorage.setItem('admin_unlocked', '1');
+      location.hash = '#/dashboard';
+      route();
+    } else {
+      $('#lg-msg').firstChild.textContent = '❌ 密码错误。';
+      $('#lg-pwd').value = '';
+    }
+  };
+  $('#lg-go').onclick = doLogin;
+  $('#lg-pwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+  $('#lg-reset').onclick = async () => {
+    if (!(await confirmBox('将清除本浏览器保存的后台密码、GitHub Token 等全部配置，需要重新初始化。确定？'))) return;
+    ['admin_pwd', 'admin_unlocked', 'gh_token', 'gh_owner', 'gh_repo', 'gh_branch', 'twikoo_token', 'twikoo_url', 'site_cache', 'publish_queue'].forEach((k) => localStorage.removeItem(k));
+    location.hash = '#/setup';
     route();
   };
 };
 
 document.getElementById('btn-logout').onclick = async () => {
-  if (!(await confirmBox('仅清除本浏览器的配置信息？'))) return;
-  ['gh_token', 'gh_owner', 'gh_repo', 'gh_branch', 'twikoo_token', 'site_cache'].forEach((k) => localStorage.removeItem(k));
+  if (!(await confirmBox('退出后台？（仅清除登录状态，保留仓库配置，下次输入密码进入）'))) return;
+  ['admin_unlocked', 'twikoo_token'].forEach((k) => localStorage.removeItem(k));
   location.hash = '#/login';
   route();
 };
@@ -681,6 +751,7 @@ routes.settings = async () => {
       time: Date.now(),
     });
     localStorage.setItem('site_cache', JSON.stringify(out));
+    localStorage.setItem('twikoo_url', out.twikooEnvId || '');
     toast('站点设置已加入发布队列', 'ok');
   };
 };
